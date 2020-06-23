@@ -1,5 +1,16 @@
 # Marlin 3D Printer Firmware
 
+## custom status screen
+
+I remade the status screen, the result can be seen here: [Reddit](https://www.reddit.com/r/3Dprinting/comments/helw5n/so_i_made_my_own_marlin_status_screen_what_do_you/?utm_source=share&utm_medium=web2x)
+
+To integrate the changes into your marlin firmware, you just need to swap two files.
+
+  - Marlin/src/lcd/dogm/status_screen_DOGM.cpp  thats the file which draws the whole lcd status screen. My code: line 337 to 426
+  - Marlin/src/lcd/dogm/dogm_Statusscreen.h     I updated the nozzle and bed bitmaps because they were to big. My code: line 283, 294 to 338, 755, 766 to 796
+  
+Just take these two files from my version and replace the standard ones with them. I didn't test with different settings, so it might not work. You need a 128x64 pixel lcd screen. If you have multiple Hotends, just the first one gets displayed.
+
 ![GitHub](https://img.shields.io/github/license/marlinfirmware/marlin.svg)
 ![GitHub contributors](https://img.shields.io/github/contributors/marlinfirmware/marlin.svg)
 ![GitHub Release Date](https://img.shields.io/github/release-date/marlinfirmware/marlin.svg)
