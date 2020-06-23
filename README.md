@@ -2,7 +2,7 @@
 
 ## custom status screen
 
-I remade the status screen, the result can be seen here: ![Reddit](https://www.reddit.com/r/3Dprinting/comments/helw5n/so_i_made_my_own_marlin_status_screen_what_do_you/?utm_source=share&utm_medium=web2x)
+I remade the status screen, the result can be seen here: [Reddit](https://www.reddit.com/r/3Dprinting/comments/helw5n/so_i_made_my_own_marlin_status_screen_what_do_you/?utm_source=share&utm_medium=web2x)
 
 To integrate the changes into your marlin firmware, you just need to swap two files.
 
