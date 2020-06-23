@@ -29,6 +29,9 @@
 
 #if HAS_GRAPHICAL_LCD && DISABLED(LIGHTWEIGHT_UI)
 
+#include <math.h>
+//#include "..\..\HAL\LINUX\hardware\Clock.h"
+
 #include "dogm_Statusscreen.h"
 #include "ultralcd_DOGM.h"
 #include "../ultralcd.h"
@@ -60,6 +63,7 @@
   #include "../../feature/mixing.h"
 #endif
 
+#define PI               3.14159
 #define X_LABEL_POS      3
 #define X_VALUE_POS     11
 #define XYZ_SPACING     37
@@ -330,534 +334,99 @@ FORCE_INLINE void _draw_axis_value(const AxisEnum axis, const char *value, const
   }
 }
 
+#define GRAPHWIDTH 46                          //width of the temp graph on the lcd in pixels
+millis_t time = 0;                             //timer for temp graph refreshing
+uint8_t iterations = 0;                        //counts the graph refreshes. that way, the temp graphs can be drawn correctly on printer start up because then there exist no past temp values 
+uint16_t bedTemp[GRAPHWIDTH] = {0};            //arrays which hold the past temp information so the graphs can be plotted
+uint16_t bedTargetTemp[GRAPHWIDTH] = {0};
+uint16_t hotendTemp[GRAPHWIDTH] = {0};
+uint16_t hotendTargetTemp[GRAPHWIDTH] = {0};
+uint16_t bedMinTemp;                           //maximum and minimum temp values to scale the graphs accordingly
+uint16_t bedMaxTemp;
+uint16_t hotendMinTemp;
+uint16_t hotendMaxTemp;
+
 void MarlinUI::draw_status_screen() {
-
-  static char xstring[5
-    #if ENABLED(LCD_SHOW_E_TOTAL)
-      + 7
-    #endif
-  ], ystring[5], zstring[8];
-  #if ENABLED(FILAMENT_LCD_DISPLAY)
-    static char wstring[5], mstring[4];
-  #endif
-
-  #if HAS_PRINT_PROGRESS
-    #if DISABLED(DOGM_SD_PERCENT)
-      #define _SD_INFO_X(len) (PROGRESS_BAR_X + (PROGRESS_BAR_WIDTH) / 2 - (len) * (MENU_FONT_WIDTH) / 2)
-    #else
-      #define _SD_INFO_X(len) (LCD_PIXEL_WIDTH - (len) * (MENU_FONT_WIDTH))
-    #endif
-
-    #if ENABLED(DOGM_SD_PERCENT)
-      static char progress_string[5];
-    #endif
-    static uint8_t lastElapsed = 0xFF, lastProgress = 0xFF;
-    static u8g_uint_t elapsed_x_pos = 0, progress_bar_solid_width = 0;
-    static char elapsed_string[16];
-    #if ENABLED(SHOW_REMAINING_TIME)
-      static u8g_uint_t estimation_x_pos = 0;
-      static char estimation_string[10];
-      #if BOTH(DOGM_SD_PERCENT, ROTATE_PROGRESS_DISPLAY)
-        static u8g_uint_t progress_x_pos = 0;
-        static uint8_t progress_state = 0;
-        static bool prev_blink = 0;
-      #endif
-    #endif
-  #endif
-
-  const bool showxy = (true
-    #if ENABLED(LCD_SHOW_E_TOTAL)
-      && !printingIsActive()
-    #endif
-  );
-
-  // At the first page, generate new display values
-  if (first_page) {
-    #if ANIM_HBCC
-      uint8_t new_bits = 0;
-      #if ANIM_HOTEND
-        HOTEND_LOOP() if (thermalManager.isHeatingHotend(e)) SBI(new_bits, HEATBIT_HOTEND + e);
-      #endif
-      #if ANIM_BED
-        if (thermalManager.isHeatingBed()) SBI(new_bits, HEATBIT_BED);
-      #endif
-      #if DO_DRAW_CHAMBER && HAS_HEATED_CHAMBER
-        if (thermalManager.isHeatingChamber()) SBI(new_bits, HEATBIT_CHAMBER);
-      #endif
-      #if ANIM_CUTTER
-        if (cutter.enabled()) SBI(new_bits, HEATBIT_CUTTER);
-      #endif
-      heat_bits = new_bits;
-    #endif
-
-    const xyz_pos_t lpos = current_position.asLogical();
-    strcpy(zstring, ftostr52sp(lpos.z));
-
-    if (showxy) {
-      strcpy(xstring, ftostr4sign(lpos.x));
-      strcpy(ystring, ftostr4sign(lpos.y));
-    }
-    else {
-      #if ENABLED(LCD_SHOW_E_TOTAL)
-        const uint8_t escale = e_move_accumulator >= 100000.0f ? 10 : 1; // After 100m switch to cm
-        sprintf_P(xstring, PSTR("%ld%cm"), uint32_t(_MAX(e_move_accumulator, 0.0f)) / escale, escale == 10 ? 'c' : 'm'); // 1234567mm
-      #endif
-    }
-
-    #if ENABLED(FILAMENT_LCD_DISPLAY)
-      strcpy(wstring, ftostr12ns(filwidth.measured_mm));
-      strcpy(mstring, i16tostr3rj(planner.volumetric_percent(parser.volumetric_enabled)));
-    #endif
-
-    // Progress / elapsed / estimation updates and string formatting to avoid float math on each LCD draw
-    #if HAS_PRINT_PROGRESS
-      const progress_t progress =
-        #if HAS_PRINT_PROGRESS_PERMYRIAD
-          get_progress_permyriad()
-        #else
-          get_progress_percent()
-        #endif
-      ;
-      duration_t elapsed = print_job_timer.duration();
-      const uint8_t p = progress & 0xFF, ev = elapsed.value & 0xFF;
-      if (p != lastProgress) {
-        lastProgress = p;
-
-        progress_bar_solid_width = u8g_uint_t((PROGRESS_BAR_WIDTH - 2) * (progress / (PROGRESS_SCALE)) * 0.01f);
-
-        #if ENABLED(DOGM_SD_PERCENT)
-          if (progress == 0) {
-            progress_string[0] = '\0';
-            #if ENABLED(SHOW_REMAINING_TIME)
-              estimation_string[0] = '\0';
-              estimation_x_pos = _SD_INFO_X(0);
-            #endif
-          }
-          else {
-            strcpy(progress_string, (
-              #if ENABLED(PRINT_PROGRESS_SHOW_DECIMALS)
-                permyriadtostr4(progress)
-              #else
-                ui8tostr3rj(progress / (PROGRESS_SCALE))
-              #endif
-            ));
-          }
-          #if BOTH(SHOW_REMAINING_TIME, ROTATE_PROGRESS_DISPLAY) // Tri-state progress display mode
-            progress_x_pos = _SD_INFO_X(strlen(progress_string) + 1);
-          #endif
-        #endif
-      }
-
-      constexpr bool can_show_days = DISABLED(DOGM_SD_PERCENT) || ENABLED(ROTATE_PROGRESS_DISPLAY);
-      if (ev != lastElapsed) {
-        lastElapsed = ev;
-        const uint8_t len = elapsed.toDigital(elapsed_string, can_show_days && elapsed.value >= 60*60*24L);
-        elapsed_x_pos = _SD_INFO_X(len);
-
-        #if ENABLED(SHOW_REMAINING_TIME)
-          if (!(ev & 0x3)) {
-            uint32_t timeval = (0
-              #if BOTH(LCD_SET_PROGRESS_MANUALLY, USE_M73_REMAINING_TIME)
-                + get_remaining_time()
-              #endif
-            );
-            if (!timeval && progress > 0) timeval = elapsed.value * (100 * (PROGRESS_SCALE) - progress) / progress;
-            if (!timeval) {
-              estimation_string[0] = '\0';
-              estimation_x_pos = _SD_INFO_X(0);
-            }
-            else {
-              duration_t estimation = timeval;
-              const uint8_t len = estimation.toDigital(estimation_string, can_show_days && estimation.value >= 60*60*24L);
-              estimation_x_pos = _SD_INFO_X(len
-                #if !BOTH(DOGM_SD_PERCENT, ROTATE_PROGRESS_DISPLAY)
-                  + 1
-                #endif
-              );
-            }
-          }
-        #endif
-      }
-    #endif
+  if(thermalManager.isHeatingHotend(0)){                    //decide on drawing the wiggly heat lines above the hotend bmp
+    u8g.drawBitmapP(0, 2, 1, 19, status_hotend_a_bmp);      //draw hotend with wiggly heat lines
+  }else{
+    u8g.drawBitmapP(0, 2, 1, 19, status_hotend_b_bmp);      //draw hotend without wiggly heat lines
   }
+  if(thermalManager.isHeatingBed()){                        //decide on drawing the wiggly heat lines above the bed bmp
+    u8g.drawBitmapP(0, 28, 1, 12, status_bed_on_bmp);       //draw bed with wiggly heat lines
+  }else{
+    u8g.drawBitmapP(0, 39, 1, 1, status_bed_bmp);           //draw bed without wiggly heat lines
+  }    
+  _draw_centered_temp(thermalManager.degHotend(0), 18, 20);       //draws the temperature values next to the hotend/bed bmps
+  _draw_centered_temp(thermalManager.degTargetHotend(0), 18, 11);
+  _draw_centered_temp(thermalManager.degBed(), 18, 43);
+  _draw_centered_temp(thermalManager.degTargetBed(), 18, 34);
 
-  const bool blink = get_blink();
-
-  // Status Menu Font
-  set_font(FONT_STATUSMENU);
-
-  #if DO_DRAW_LOGO
-    if (PAGE_CONTAINS(STATUS_LOGO_Y, STATUS_LOGO_Y + STATUS_LOGO_HEIGHT - 1))
-      u8g.drawBitmapP(STATUS_LOGO_X, STATUS_LOGO_Y, STATUS_LOGO_BYTEWIDTH, STATUS_LOGO_HEIGHT, status_logo_bmp);
-  #endif
-
-  #if STATUS_HEATERS_WIDTH
-    // Draw all heaters (and maybe the bed) in one go
-    if (PAGE_CONTAINS(STATUS_HEATERS_Y, STATUS_HEATERS_Y + STATUS_HEATERS_HEIGHT - 1))
-      u8g.drawBitmapP(STATUS_HEATERS_X, STATUS_HEATERS_Y, STATUS_HEATERS_BYTEWIDTH, STATUS_HEATERS_HEIGHT, status_heaters_bmp);
-  #endif
-
-  #if DO_DRAW_CUTTER && DISABLED(STATUS_COMBINE_HEATERS)
-    #if ANIM_CUTTER
-      #define CUTTER_BITMAP(S) ((S) ? status_cutter_on_bmp : status_cutter_bmp)
-    #else
-      #define CUTTER_BITMAP(S) status_cutter_bmp
-    #endif
-    const uint8_t cuttery = STATUS_CUTTER_Y(CUTTER_ALT()),
-                  cutterh = STATUS_CUTTER_HEIGHT(CUTTER_ALT());
-    if (PAGE_CONTAINS(cuttery, cuttery + cutterh - 1))
-      u8g.drawBitmapP(STATUS_CUTTER_X, cuttery, STATUS_CUTTER_BYTEWIDTH, cutterh, CUTTER_BITMAP(CUTTER_ALT()));
-  #endif
-
-  #if DO_DRAW_BED && DISABLED(STATUS_COMBINE_HEATERS)
-    #if ANIM_BED
-      #define BED_BITMAP(S) ((S) ? status_bed_on_bmp : status_bed_bmp)
-    #else
-      #define BED_BITMAP(S) status_bed_bmp
-    #endif
-    const uint8_t bedy = STATUS_BED_Y(BED_ALT()),
-                  bedh = STATUS_BED_HEIGHT(BED_ALT());
-    if (PAGE_CONTAINS(bedy, bedy + bedh - 1))
-      u8g.drawBitmapP(STATUS_BED_X, bedy, STATUS_BED_BYTEWIDTH, bedh, BED_BITMAP(BED_ALT()));
-  #endif
-
-  #if DO_DRAW_CHAMBER && DISABLED(STATUS_COMBINE_HEATERS)
-    #if ANIM_CHAMBER
-      #define CHAMBER_BITMAP(S) ((S) ? status_chamber_on_bmp : status_chamber_bmp)
-    #else
-      #define CHAMBER_BITMAP(S) status_chamber_bmp
-    #endif
-    const uint8_t chambery = STATUS_CHAMBER_Y(CHAMBER_ALT()),
-                  chamberh = STATUS_CHAMBER_HEIGHT(CHAMBER_ALT());
-    if (PAGE_CONTAINS(chambery, chambery + chamberh - 1))
-      u8g.drawBitmapP(STATUS_CHAMBER_X, chambery, STATUS_CHAMBER_BYTEWIDTH, chamberh, CHAMBER_BITMAP(CHAMBER_ALT()));
-  #endif
-
-  #if DO_DRAW_FAN
-    #if STATUS_FAN_FRAMES > 2
-      static bool old_blink;
-      static uint8_t fan_frame;
-      if (old_blink != blink) {
-        old_blink = blink;
-        if (!thermalManager.fan_speed[0] || ++fan_frame >= STATUS_FAN_FRAMES) fan_frame = 0;
-      }
-    #endif
-    if (PAGE_CONTAINS(STATUS_FAN_Y, STATUS_FAN_Y + STATUS_FAN_HEIGHT - 1))
-      u8g.drawBitmapP(STATUS_FAN_X, STATUS_FAN_Y, STATUS_FAN_BYTEWIDTH, STATUS_FAN_HEIGHT,
-        #if STATUS_FAN_FRAMES > 2
-          fan_frame == 1 ? status_fan1_bmp :
-          fan_frame == 2 ? status_fan2_bmp :
-          #if STATUS_FAN_FRAMES > 3
-            fan_frame == 3 ? status_fan3_bmp :
-          #endif
-        #elif STATUS_FAN_FRAMES > 1
-          blink && thermalManager.fan_speed[0] ? status_fan1_bmp :
-        #endif
-        status_fan0_bmp
-      );
-  #endif
-
-  //
-  // Temperature Graphics and Info
-  //
-  if (PAGE_UNDER(6 + 1 + 12 + 1 + 6 + 1)) {
-    // Extruders
-    #if DO_DRAW_HOTENDS
-      LOOP_L_N(e, MAX_HOTEND_DRAW)
-        _draw_hotend_status((heater_ind_t)e, blink);
-    #endif
-
-    // Laser / Spindle
-    #if DO_DRAW_CUTTER
-      if (cutter.power && PAGE_CONTAINS(STATUS_CUTTER_TEXT_Y - INFO_FONT_ASCENT, STATUS_CUTTER_TEXT_Y - 1)) {
-        lcd_put_u8str(STATUS_CUTTER_TEXT_X, STATUS_CUTTER_TEXT_Y, i16tostr3rj(cutter.powerPercent(cutter.power)));
-        lcd_put_wchar('%');
-      }
-    #endif
-
-    // Heated Bed
-    #if DO_DRAW_BED
-      _draw_bed_status(blink);
-    #endif
-
-    // Heated Chamber
-    #if DO_DRAW_CHAMBER
-      _draw_chamber_status();
-    #endif
-
-    // Fan, if a bitmap was provided
-    #if DO_DRAW_FAN
-      if (PAGE_CONTAINS(STATUS_FAN_TEXT_Y - INFO_FONT_ASCENT, STATUS_FAN_TEXT_Y - 1)) {
-        char c = '%';
-        uint16_t spd = thermalManager.fan_speed[0];
-        if (spd) {
-          #if ENABLED(ADAPTIVE_FAN_SLOWING)
-            if (!blink && thermalManager.fan_speed_scaler[0] < 128) {
-              spd = thermalManager.scaledFanSpeed(0, spd);
-              c = '*';
-            }
-          #endif
-          lcd_put_u8str(STATUS_FAN_TEXT_X, STATUS_FAN_TEXT_Y, i16tostr3rj(thermalManager.fanPercent(spd)));
-          lcd_put_wchar(c);
-        }
-      }
-    #endif
-  }
-
-  #if ENABLED(SDSUPPORT)
-    //
-    // SD Card Symbol
-    //
-    if (card.isFileOpen() && PAGE_CONTAINS(42, 51)) {
-      // Upper box
-      u8g.drawBox(42, 42, 8, 7);     // 42-48 (or 41-47)
-      // Right edge
-      u8g.drawBox(50, 44, 2, 5);     // 44-48 (or 43-47)
-      // Bottom hollow box
-      u8g.drawFrame(42, 49, 10, 4);  // 49-52 (or 48-51)
-      // Corner pixel
-      u8g.drawPixel(50, 43);         // 43 (or 42)
-    }
-  #endif // SDSUPPORT
-
-  #if HAS_PRINT_PROGRESS
-    //
-    // Progress bar frame
-    //
-
-    if (PAGE_CONTAINS(49, 52))
-      u8g.drawFrame(PROGRESS_BAR_X, 49, PROGRESS_BAR_WIDTH, 4);
-
-    //
-    // Progress bar solid part
-    //
-
-    if (PAGE_CONTAINS(50, 51))     // 50-51 (or just 50)
-      u8g.drawBox(PROGRESS_BAR_X + 1, 50, progress_bar_solid_width, 2);
-
-    if (PAGE_CONTAINS(EXTRAS_BASELINE - INFO_FONT_ASCENT, EXTRAS_BASELINE - 1)) {
-
-      #if ALL(DOGM_SD_PERCENT, SHOW_REMAINING_TIME, ROTATE_PROGRESS_DISPLAY)
-
-        if (prev_blink != blink) {
-          prev_blink = blink;
-          if (++progress_state >= 3) progress_state = 0;
-        }
-
-        if (progress_state == 0) {
-          if (progress_string[0]) {
-            lcd_put_u8str(progress_x_pos, EXTRAS_BASELINE, progress_string);
-            lcd_put_wchar('%');
-          }
-        }
-        else if (progress_state == 2 && estimation_string[0]) {
-          lcd_put_u8str_P(PROGRESS_BAR_X, EXTRAS_BASELINE, PSTR("R:"));
-          lcd_put_u8str(estimation_x_pos, EXTRAS_BASELINE, estimation_string);
-        }
-        else if (elapsed_string[0]) {
-          lcd_put_u8str_P(PROGRESS_BAR_X, EXTRAS_BASELINE, E_LBL);
-          lcd_put_u8str(elapsed_x_pos, EXTRAS_BASELINE, elapsed_string);
-        }
-
-      #else // !DOGM_SD_PERCENT || !SHOW_REMAINING_TIME || !ROTATE_PROGRESS_DISPLAY
-
-        //
-        // SD Percent Complete
-        //
-
-        #if ENABLED(DOGM_SD_PERCENT)
-          if (progress_string[0]) {
-            lcd_put_u8str(55, 48, progress_string); // Percent complete
-            lcd_put_wchar('%');
-          }
-        #endif
-
-        //
-        // Elapsed Time
-        //
-
-        #if ENABLED(SHOW_REMAINING_TIME)
-          if (blink && estimation_string[0]) {
-            lcd_put_wchar(estimation_x_pos, EXTRAS_BASELINE, 'R');
-            lcd_put_u8str(estimation_string);
-          }
-          else
-        #endif
-            lcd_put_u8str(elapsed_x_pos, EXTRAS_BASELINE, elapsed_string);
-
-      #endif // !DOGM_SD_PERCENT || !SHOW_REMAINING_TIME || !ROTATE_PROGRESS_DISPLAY
-    }
-
-  #endif // HAS_PRINT_PROGRESS
-
-  //
-  // XYZ Coordinates
-  //
-
-  #if ENABLED(XYZ_HOLLOW_FRAME)
-    #define XYZ_FRAME_TOP 29
-    #define XYZ_FRAME_HEIGHT INFO_FONT_ASCENT + 3
-  #else
-    #define XYZ_FRAME_TOP 30
-    #define XYZ_FRAME_HEIGHT INFO_FONT_ASCENT + 1
-  #endif
-
-  if (PAGE_CONTAINS(XYZ_FRAME_TOP, XYZ_FRAME_TOP + XYZ_FRAME_HEIGHT - 1)) {
-
-    #if ENABLED(XYZ_HOLLOW_FRAME)
-      u8g.drawFrame(0, XYZ_FRAME_TOP, LCD_PIXEL_WIDTH, XYZ_FRAME_HEIGHT); // 8: 29-40  7: 29-39
-    #else
-      u8g.drawBox(0, XYZ_FRAME_TOP, LCD_PIXEL_WIDTH, XYZ_FRAME_HEIGHT);   // 8: 30-39  7: 30-37
-    #endif
-
-    if (PAGE_CONTAINS(XYZ_BASELINE - (INFO_FONT_ASCENT - 1), XYZ_BASELINE)) {
-
-      #if DISABLED(XYZ_HOLLOW_FRAME)
-        u8g.setColorIndex(0); // white on black
-      #endif
-
-      #if DUAL_MIXING_EXTRUDER
-
-        // Two-component mix / gradient instead of XY
-
-        char mixer_messages[12];
-        const char *mix_label;
-        #if ENABLED(GRADIENT_MIX)
-          if (mixer.gradient.enabled) {
-            mixer.update_mix_from_gradient();
-            mix_label = "Gr";
-          }
-          else
-        #endif
-          {
-            mixer.update_mix_from_vtool();
-            mix_label = "Mx";
-          }
-        sprintf_P(mixer_messages, PSTR("%s %d;%d%% "), mix_label, int(mixer.mix[0]), int(mixer.mix[1]));
-        lcd_put_u8str(X_LABEL_POS, XYZ_BASELINE, mixer_messages);
-
-      #else
-
-        if (showxy) {
-          _draw_axis_value(X_AXIS, xstring, blink);
-          _draw_axis_value(Y_AXIS, ystring, blink);
-        }
-        else {
-          _draw_axis_value(E_AXIS, xstring, true);
-          lcd_put_u8str_P(PSTR("       "));
-        }
-
-      #endif
-
-      _draw_axis_value(Z_AXIS, zstring, blink);
-
-      #if DISABLED(XYZ_HOLLOW_FRAME)
-        u8g.setColorIndex(1); // black on white
-      #endif
+  const xyz_pos_t lpos = current_position.asLogical();      //gets x, y and z position
+  lcd_put_u8str(80, 7, "X: ");                              //draws the x, y and z letters and the x, y and z values
+  lcd_put_u8str(92, 7, ftostr4sign(lpos.x));                //i think the function with this weird name converts the float into a string
+  lcd_put_u8str(80, 16, "Y: ");
+  lcd_put_u8str(92, 16, ftostr4sign(lpos.y));
+  lcd_put_u8str(80, 25, "Z: ");
+  lcd_put_u8str(92, 25, ftostr4sign(lpos.z));
+  
+  u8g.drawRFrame(80, 26, 9, 38, 0);                             //draws the hollow frame around the z bar graph
+  for(uint16_t i = 63; i > 62 - lpos.z * 36 / Z_MAX_POS; i--){  //scales the z-axis value according to your z-axis size and the previously drawn bar graph size
+    for(uint16_t j = 81; j < 88; j++){                          //i did not use the u8glib function for drawing boxes because it did not work
+      u8g.drawPixel(j, i);                                      //fills the bargraph with pixels up to the desired level
     }
   }
 
-  //
-  // Feedrate
-  //
-  #define EXTRAS_2_BASELINE (EXTRAS_BASELINE + 3)
+  u8g.drawRFrame(90, 26, 38, 38, 0);                                            //draws the hollow frame for the x-y plot
+  u8g.drawPixel(91 + lpos.x * 36 / X_MAX_POS, 62 - lpos.y * 36 / Y_MAX_POS);    //scales x and y values according to your bed size and the previously drawn frame size
 
-  if (PAGE_CONTAINS(EXTRAS_2_BASELINE - INFO_FONT_ASCENT, EXTRAS_2_BASELINE - 1)) {
-    set_font(FONT_MENU);
-    lcd_put_wchar(3, EXTRAS_2_BASELINE, LCD_STR_FEEDRATE[0]);
+  lcd_put_u8str(5, 53, "Fan");
+  uint16_t fanSpeed = thermalManager.fanPercent(thermalManager.scaledFanSpeed(0, thermalManager.fan_speed[0])); //gets the fan speed. idk why so complicated, but it works
+  lcd_put_u8str(2, 62, i16tostr3rj(fanSpeed));  //drawing the fan value and a % sign
+  lcd_put_u8str(20, 62, "%");
 
-    set_font(FONT_STATUSMENU);
-    lcd_put_u8str(12, EXTRAS_2_BASELINE, i16tostr3rj(feedrate_percentage));
-    lcd_put_wchar('%');
+  u8g.drawCircle(53, 63, 17, U8G_DRAW_UPPER_RIGHT); //draws the right half of the speedometer-circle
+  u8g.drawCircle(53, 63, 17, U8G_DRAW_UPPER_LEFT);  //draws the left half of the speedometer-circle
+  u8g.drawLine(53, 63, 53 - cos((fanSpeed * PI - PI) / 100) * 15, 63 - sin(fanSpeed * PI / 100) * 15); //draws the line and does fancy math
 
-    //
-    // Filament sensor display if SD is disabled
-    //
-    #if ENABLED(FILAMENT_LCD_DISPLAY) && DISABLED(SDSUPPORT)
-      lcd_put_u8str(56, EXTRAS_2_BASELINE, wstring);
-      lcd_put_u8str(102, EXTRAS_2_BASELINE, mstring);
-      lcd_put_wchar('%');
-      set_font(FONT_MENU);
-      lcd_put_wchar(47, EXTRAS_2_BASELINE, LCD_STR_FILAM_DIA[0]); // lcd_put_u8str_P(PSTR(LCD_STR_FILAM_DIA));
-      lcd_put_wchar(93, EXTRAS_2_BASELINE, LCD_STR_FILAM_MUL[0]);
-    #endif
+  if (millis() - time > 3000){  //updates the temp graphs every 3 seconds
+    time = millis();            //resets timer
+    bedMinTemp = bedTemp[0] < bedTargetTemp[0] ? bedTemp[0] : bedTargetTemp[0];                 //in order to scale the temp graph correctly,
+    bedMaxTemp = bedTemp[0] > bedTargetTemp[0] ? bedTemp[0] : bedTargetTemp[0];                 //the minimum and maximum temp values have to 
+    hotendMinTemp = hotendTemp[0] < hotendTargetTemp[0] ? hotendTemp[0] : hotendTargetTemp[0];  //be determined. this is the first step of
+    hotendMaxTemp = hotendTemp[0] > hotendTargetTemp[0] ? hotendTemp[0] : hotendTargetTemp[0];  //doing this, second step comes later
+    for (uint8_t i = GRAPHWIDTH - iterations; i < GRAPHWIDTH - 1; i++){                         //ensuring that only array indices who are initialized get processed, because on startup the arrays are empty and only slowly fill with temp values
+      bedTemp[i] = bedTemp[i + 1];                                                              //shifting the array values one to the left as they get "older"
+      bedTargetTemp[i] = bedTargetTemp[i + 1];
+      hotendTemp[i] = hotendTemp[i + 1];
+      hotendTargetTemp[i] = hotendTargetTemp[i + 1];
+      bedMinTemp = bedTemp[i] < bedMinTemp ? bedTemp[i] : bedMinTemp;                           //second step of finding the maximum
+      bedMinTemp = bedTargetTemp[i] < bedMinTemp ? bedTargetTemp[i] : bedMinTemp;               //and minimum temp values for scaling
+      bedMaxTemp = bedTemp[i] > bedMaxTemp ? bedTemp[i] : bedMaxTemp;
+      bedMaxTemp = bedTargetTemp[i] > bedMaxTemp ? bedTargetTemp[i] : bedMaxTemp;
+      hotendMinTemp = hotendTemp[i] < hotendMinTemp ? hotendTemp[i] : hotendMinTemp;
+      hotendMinTemp = hotendTargetTemp[i] < hotendMinTemp ? hotendTargetTemp[i] : hotendMinTemp;
+      hotendMaxTemp = hotendTemp[i] > hotendMaxTemp ? hotendTemp[i] : hotendMaxTemp;
+      hotendMaxTemp = hotendTargetTemp[i] > hotendMaxTemp ? hotendTargetTemp[i] : hotendMaxTemp;
+    }
+    bedTemp[GRAPHWIDTH - 1] = thermalManager.degBed();                                          //adding the latest temp values at the beginning of the arrays
+    bedTargetTemp[GRAPHWIDTH - 1] = thermalManager.degTargetBed();
+    hotendTemp[GRAPHWIDTH - 1] = thermalManager.degHotend(0);
+    hotendTargetTemp[GRAPHWIDTH - 1] = thermalManager.degTargetHotend(0);
+    iterations = iterations >= GRAPHWIDTH ? GRAPHWIDTH : iterations + 1;                        //increase the iteration counter until its the same as the graphwidth
+  }                                                                                             //because then there are no uninitialized array indices left
+  for (uint8_t i = GRAPHWIDTH - iterations; i < GRAPHWIDTH; i++){
+    u8g.drawPixel(33 + i, 21 - (hotendTemp[i] - hotendMinTemp + 1) * 21 / (hotendMaxTemp - hotendMinTemp + 2));       //scaling the values and plotting the pixels
+    u8g.drawPixel(33 + i, 21 - (hotendTargetTemp[i] - hotendMinTemp + 1) * 21 / (hotendMaxTemp - hotendMinTemp + 2));
+    u8g.drawPixel(33 + i, 44 - (bedTemp[i] - bedMinTemp + 1) * 21 / (bedMaxTemp - bedMinTemp + 2));
+    u8g.drawPixel(33 + i, 44 - (bedTargetTemp[i] - bedMinTemp + 1) * 21 / (bedMaxTemp - bedMinTemp + 2));
   }
-
-  //
-  // Status line
-  //
-  if (PAGE_CONTAINS(STATUS_BASELINE - INFO_FONT_ASCENT, STATUS_BASELINE + INFO_FONT_DESCENT)) {
-    lcd_moveto(0, STATUS_BASELINE);
-
-    #if BOTH(FILAMENT_LCD_DISPLAY, SDSUPPORT)
-      // Alternate Status message and Filament display
-      if (ELAPSED(millis(), next_filament_display)) {
-        lcd_put_u8str_P(PSTR(LCD_STR_FILAM_DIA));
-        lcd_put_wchar(':');
-        lcd_put_u8str(wstring);
-        lcd_put_u8str_P(PSTR("  " LCD_STR_FILAM_MUL));
-        lcd_put_wchar(':');
-        lcd_put_u8str(mstring);
-        lcd_put_wchar('%');
-      }
-      else
-    #endif
-        draw_status_message(blink);
+  u8g.drawLine(32, 0, 32, 21);  //draws the left border line of the graph areas
+  u8g.drawLine(32, 23, 32, 44);
   }
-}
 
 void MarlinUI::draw_status_message(const bool blink) {
-
-  // Get the UTF8 character count of the string
-  uint8_t slen = utf8_strlen(status_message);
-
-  #if ENABLED(STATUS_MESSAGE_SCROLLING)
-
-    static bool last_blink = false;
-
-    if (slen <= LCD_WIDTH) {
-      // The string fits within the line. Print with no scrolling
-      lcd_put_u8str(status_message);
-      while (slen < LCD_WIDTH) { lcd_put_wchar(' '); ++slen; }
-    }
-    else {
-      // String is longer than the available space
-
-      // Get a pointer to the next valid UTF8 character
-      // and the string remaining length
-      uint8_t rlen;
-      const char *stat = status_and_len(rlen);
-      lcd_put_u8str_max(stat, LCD_PIXEL_WIDTH);
-
-      // If the remaining string doesn't completely fill the screen
-      if (rlen < LCD_WIDTH) {
-        lcd_put_wchar('.');                     // Always at 1+ spaces left, draw a dot
-        uint8_t chars = LCD_WIDTH - rlen;       // Amount of space left in characters
-        if (--chars) {                          // Draw a second dot if there's space
-          lcd_put_wchar('.');
-          if (--chars) {                        // Print a second copy of the message
-            lcd_put_u8str_max(status_message, LCD_PIXEL_WIDTH - (rlen + 2) * (MENU_FONT_WIDTH));
-            lcd_put_wchar(' ');
-          }
-        }
-      }
-      if (last_blink != blink) {
-        last_blink = blink;
-        advance_status_scroll();
-      }
-    }
-
-  #else // !STATUS_MESSAGE_SCROLLING
-
-    UNUSED(blink);
-
-    // Just print the string to the LCD
-    lcd_put_u8str_max(status_message, LCD_PIXEL_WIDTH);
-
-    // Fill the rest with spaces
-    for (; slen < LCD_WIDTH; ++slen) lcd_put_wchar(' ');
-
-  #endif // !STATUS_MESSAGE_SCROLLING
+  //sorry status massage, no space left for you :(
 }
 
 #endif // HAS_GRAPHICAL_LCD && !LIGHTWEIGHT_UI
